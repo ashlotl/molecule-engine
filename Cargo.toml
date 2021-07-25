@@ -1,7 +1,16 @@
 [package]
 name = "molecule-engine"
 version = "0.1.0"
-authors = ["Ashlotl <thesupremeliverwurst@gmail.com>"]
+authors = ["ashlotl <thesupremeliverwurst@gmail.com>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+crossbeam = "0.5"
+vulkano = "0.24"
+vulkano-shaders = "0.24"
+vulkano-win = "0.24"
+winit = "0.25"
+
+#local dependencies, which I should probably upload to crates.io if I ever want someone else to be able to use this code.
+take-for-scope = {path = "../take-for-scope"}

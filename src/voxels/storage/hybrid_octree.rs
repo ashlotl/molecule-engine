@@ -9,9 +9,6 @@ use std::{
 
 use crate::{
     math::{
-        constants::{
-            EPSILON,
-        },
         vectors::{
             Vector3U16,
             VoxelLocation,
@@ -19,7 +16,10 @@ use crate::{
     },
     voxels::{
         storage::{
-            sorted_level_list::SortedLevelList,
+            sorted_level_list::{
+                SortedLevel,
+                SortedLevelList,
+            },
             particle::{
                 MATERIAL_COUNT,
                 Particle,
@@ -49,11 +49,9 @@ impl Clone for Level {
     }
 }
 
-#[derive(Clone, Default)]
 pub struct HybridOctree {
     pub level_depth:u64,//number of levels
     pub level_length:u64,
-    pub divisions_per_level:u32,
     pub levels:SortedLevelList,
 }
 
@@ -62,14 +60,10 @@ impl HybridOctree {
         if level_length<=1 {
             panic!("Level sizes must exceed 1 on each axis");
         }
-        
-        let _divisions_per_level=((level_length as f64).log2()+EPSILON) as u32;
 
         HybridOctree {
             level_depth:level_depth,
             level_length:level_length,
-            divisions_per_level:_divisions_per_level,
-            
             levels:SortedLevelList::new(),
         }
     }
@@ -79,7 +73,7 @@ impl HybridOctree {
                 if !index.0 {
                     panic!("This Level is not loaded")
                 }
-                &self.levels.data.get(index.1).unwrap().2
+                &self.levels.data[index.1].level
     }
 
     pub fn load_level(&mut self, pos:VoxelLocation, mut insecure_hasher:DefaultHasher) -> Option<DefaultHasher> {
@@ -90,10 +84,10 @@ impl HybridOctree {
                 println!("Level that needs creation requested at {:?}", pos);
                 self.levels.data.insert(
                     index,
-                    (
-                        linearized,
-                        pos,
-                        Level {
+                    SortedLevel {
+                        ordinal: linearized,
+                        location: pos,
+                        level: Level {
                             contents:RwLock::new(LevelContents {
                                 loaded:true,
                                 data: {
@@ -119,12 +113,12 @@ impl HybridOctree {
                                 },
                             }),
                         }
-                    )
+                    }
                 );
 
             }
             Some(level) => {
-                (*level.2.contents.write().expect("Could not lock Level for write access")).loaded=true;
+                (*level.level.contents.write().expect("Could not lock Level for write access")).loaded=true;
             }
         }
         Some(insecure_hasher)
