@@ -4,9 +4,15 @@ version = "0.1.0"
 authors = ["ashlotl <thesupremeliverwurst@gmail.com>"]
 edition = "2018"
 
+[lib]
+crate-type = ["lib"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 crossbeam = "0.5"
+dyn-clone = "1.0"
+mopa = "0.2"
+soa_derive = "0.10"
 vulkano = "0.24"
 vulkano-shaders = "0.24"
 vulkano-win = "0.24"
@@ -14,3 +20,9 @@ winit = "0.25"
 
 #local dependencies, which I should probably upload to crates.io if I ever want someone else to be able to use this code.
 take-for-scope = {path = "../take-for-scope"}
+
+
+[[test]]
+name = "examples"
+path = "examples/main.rs"
+harness = false

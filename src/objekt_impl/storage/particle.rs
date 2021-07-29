@@ -1,3 +1,5 @@
+use soa_derive::StructOfArray;
+
 use crate::{
     math::vectors::{
         Vector3U16,
@@ -6,7 +8,8 @@ use crate::{
 
 pub const MATERIAL_COUNT:u64=512;
 
-#[derive(Clone, Debug)]
+#[derive(Debug, PartialEq, StructOfArray)]
+#[soa_derive = "Debug, PartialEq"]
 pub struct Particle {
     pub _gpu_only_level_index_current: u32,// the level containing this Particle
     pub _gpu_only_level_index_next: u32, //the level contained by this Particle

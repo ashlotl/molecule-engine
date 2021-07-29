@@ -4,17 +4,21 @@ use std::{
         Hash,
         Hasher,
     },
-    sync::RwLock,
+    sync::{
+        Arc,
+        RwLock,
+    },
 };
 
 use crate::{
+    concurrency::molecule_objekt::MoleculeObjekt,
     math::{
         vectors::{
             Vector3U16,
             VoxelLocation,
         },
     },
-    voxels::{
+    objekt_impl::{
         storage::{
             sorted_level_list::{
                 SortedLevel,
@@ -22,16 +26,16 @@ use crate::{
             },
             particle::{
                 MATERIAL_COUNT,
-                Particle,
+                ParticleVec,
             },
         },
     },
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LevelContents {
-    pub loaded:bool,
-    pub data:Vec<Particle>,
+    pub loaded: bool,
+    pub data: ParticleVec,
 }
 
 #[derive(Debug)]
@@ -39,13 +43,15 @@ pub struct Level {
     pub contents:RwLock<LevelContents>
 }
 
-impl Clone for Level {
-    fn clone(&self) -> Self {
-        let lcontents = &*self.contents.read().expect("Could not lock Level for read access");
-        Level {
-            
-            contents: RwLock::new(lcontents.clone())
-        }
+#[derive(Clone)]
+pub struct HybridOctreeObjekt {
+    name: String,
+    inner: Arc<RwLock<HybridOctree>>,
+}
+
+impl MoleculeObjekt for HybridOctreeObjekt {
+    fn name(&self) -> String {
+        self.name.clone()
     }
 }
 
@@ -93,21 +99,27 @@ impl HybridOctree {
                                 data: {
 
                                     let volume = self.level_length.pow(3);
-                                    let mut buffer = Vec::with_capacity(volume as usize);
+                                    let mut buffer = ParticleVec::new();
                                     //TODO: read from file
-                                    let half_limit = 2<<15;
+                                    let half_limit = 1<<15;
                                     for i in 0..volume {
-                                        buffer.push(Particle {
-                                            _gpu_only_level_index_current:0,
-                                            _gpu_only_level_index_next:0,
-                                            material: (0..MATERIAL_COUNT).map(|m|
-                                                {
-                                                    (((i*MATERIAL_COUNT+m)%256) as u8).hash(&mut insecure_hasher);
+                                        buffer.material.push(
+                                            (0..MATERIAL_COUNT).map(
+                                                |m| {
+                                                    ((linearized*volume+(i*MATERIAL_COUNT+m)%256) as u8).hash(&mut insecure_hasher);
                                                     (insecure_hasher.finish()%256) as u8
                                                 }
-                                            ).into_iter().collect(),
-                                            pos: Vector3U16 {x:half_limit, y:half_limit, z:half_limit}
-                                        });
+                                            ).collect()
+                                        );
+                                    }
+                                    for _i in 0..volume {
+                                        buffer.pos.push(
+                                            Vector3U16 {
+                                                x: half_limit,
+                                                y: half_limit,
+                                                z: half_limit,
+                                            }
+                                        )
                                     }
                                     buffer
                                 },

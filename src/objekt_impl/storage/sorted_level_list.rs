@@ -1,6 +1,6 @@
 use crate::{
     math::vectors::VoxelLocation,
-    voxels::storage::hybrid_octree::Level,
+    objekt_impl::storage::hybrid_octree::Level,
 };
 
 pub struct SortedLevel {

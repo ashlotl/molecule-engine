@@ -1,7 +1,7 @@
 use take_for_scope::take_for_scope;
 
-#[test]
-fn demonstrate_take_for_scope() {
+#[allow(dead_code)]
+pub fn demonstrate_take_for_scope() {
     let mut value = Some(5);
     {
         let value1 = &mut value;

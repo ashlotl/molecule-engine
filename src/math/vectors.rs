@@ -17,7 +17,7 @@ pub struct Vector3U64 {
     pub z:u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Vector3U16 {
     pub x:u16,
     pub y:u16,

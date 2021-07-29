@@ -76,22 +76,21 @@ use vulkano::{
 use vulkano_win::VkSurfaceBuild;
 
 use winit::{
-    event_loop::EventLoop,
+    event_loop::{
+        ControlFlow,
+        EventLoop,
+    },
     window,
     window::WindowBuilder,
 };
 
-use crate::{
-    ENGINE_VERSION,
+use molecule_engine::{
+    get_engine_version,
     metadata::versions::{
         MoleculeApplicationVersion,
     },
-    voxels::{
-        renderer,
-        renderer::{
-            shaders,
-        },
-    },
+    task_impl::rendering,
+    utils::shaders::shaders_const,
 };
 
 pub struct VulkanState {
@@ -102,7 +101,7 @@ pub struct VulkanState {
     dynamic_state: Option<DynamicState>,
     framebuffers: Option<Vec<Arc<dyn FramebufferAbstract + Send + Sync>>>,
     graphics_pipelines: Vec<Option<Arc<GraphicsPipeline<SingleBufferDefinition<Vertex>>>>>,
-    graphics_set: Option<std::sync::Arc<vulkano::descriptor::descriptor_set::PersistentDescriptorSet<((), vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf<vulkano::buffer::cpu_pool::CpuBufferPoolSubbuffer<shaders::edges_shader::ty::Data, std::sync::Arc<vulkano::memory::pool::StdMemoryPool>>>)>>>,
+    graphics_set: Option<std::sync::Arc<vulkano::descriptor::descriptor_set::PersistentDescriptorSet<((), vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf<vulkano::buffer::cpu_pool::CpuBufferPoolSubbuffer<shaders_const::edges_shader::ty::Data, std::sync::Arc<vulkano::memory::pool::StdMemoryPool>>>)>>>,
     queue:Option<Arc<Queue>>,
     storage_image_persistent_descriptor_sets: Vec<Option<Arc<PersistentDescriptorSet<((), PersistentDescriptorSetImg<Arc<ImageView<Arc<StorageImage>>>>)>>>>,
     storage_images:Vec<Option<Arc<StorageImage>>>,
@@ -132,6 +131,9 @@ struct Vertex {
 
 impl VulkanTest {
     pub fn init(&mut self, application_name:&'static str, application_version:&MoleculeApplicationVersion, event_loop:&EventLoop<()>) -> std::sync::Arc<vulkano::swapchain::Surface<winit::window::Window>> {
+        
+        let version = get_engine_version();
+        
         self.state_ignore = Some(VulkanState {
             cpu_buffers_u8_slice: vec![],
             cpu_buffers_vertex_slice: vec![],
@@ -145,11 +147,11 @@ impl VulkanTest {
                             patch:application_version.patch,
                         }),
                         engine_name: Some(Cow::from("Molecule Engine")),
-                        engine_version: Some(unsafe {VulkanVersion {
-                            major:ENGINE_VERSION.major,
-                            minor:ENGINE_VERSION.minor,
-                            patch:ENGINE_VERSION.patch,
-                        }})
+                        engine_version: Some(VulkanVersion {
+                            major:version.major,
+                            minor:version.minor,
+                            patch:version.patch,
+                        })
                     }
                 ),
                 VulkanVersion::V1_2,
@@ -267,20 +269,20 @@ impl VulkanTest {
         };
         state_ignore.cpu_buffers_vertex_slice.push(Some(vertex_buffer));
 
-        let uniform_buffer = CpuBufferPool::<shaders::edges_shader::ty::Data>::new(device.clone(), BufferUsage::all());
+        let uniform_buffer = CpuBufferPool::<shaders_const::edges_shader::ty::Data>::new(device.clone(), BufferUsage::all());
 
         let uniform_subbuffer = {
-            let uniform_data = shaders::edges_shader::ty::Data {
+            let uniform_data = shaders_const::edges_shader::ty::Data {
                 window_dimensions: [800, 600],
             };
 
             uniform_buffer.next(uniform_data).unwrap()
         };
 
-        let test_compute_shader = shaders::test_compute_shader::Shader::load(device.clone()).expect("Failed to load compute Shader module.");
-        let mandelbrot_compute_shader = shaders::mandelbrot_compute_shader::Shader::load(device.clone()).expect("Failed to load compute Shader module.");
-        let mandelbrot_shader = shaders::mandelbrot_shader::Shader::load(device.clone()).expect("Failed to load graphical Shader module");
-        let standard_shader = shaders::standard_vertex_shader::Shader::load(device.clone()).expect("Failed to load graphical Shader module.");
+        let test_compute_shader = shaders_const::test_compute_shader::Shader::load(device.clone()).expect("Failed to load compute Shader module.");
+        let mandelbrot_compute_shader = shaders_const::mandelbrot_compute_shader::Shader::load(device.clone()).expect("Failed to load compute Shader module.");
+        let mandelbrot_shader = shaders_const::mandelbrot_shader::Shader::load(device.clone()).expect("Failed to load graphical Shader module");
+        let standard_shader = shaders_const::standard_vertex_shader::Shader::load(device.clone()).expect("Failed to load graphical Shader module.");
 
         let render_pass = Arc::new(
             vulkano::single_pass_renderpass!(
@@ -357,7 +359,7 @@ impl VulkanTest {
         };
         
 
-        let framebuffers = renderer::window_size_dependent_setup(&images, render_pass.clone(), &mut dynamic_state);
+        let framebuffers = rendering::window_size_dependent_setup(&images, render_pass.clone(), &mut dynamic_state);
         state_ignore.framebuffers = Some(framebuffers);
 
         state_ignore.dynamic_state = Some(dynamic_state);
@@ -517,4 +519,61 @@ impl VulkanTest {
         self.time+=1;
         Result::Ok(0)
     }
+}
+
+#[allow(dead_code)]
+pub fn make_vulkan_test() {
+    let mut test_rendering = VulkanTest {
+        configs: Configs {
+            user_config: String::from("this is a bogus path"),
+            visual_config: String::from("this is also a bogus path"),
+        },
+        shader_path: String::from("not needed"),
+        state_ignore: None,
+        time: 0,
+    };
+    println!("Initializing event loop");
+    let mut event_loop = Some(EventLoop::new());
+    println!("Got event_loop");
+    
+    let surface = {
+        let event_loop_took = event_loop.take().unwrap();
+        let surface = test_rendering.init("how to use vulkan example", &MoleculeApplicationVersion {
+            major: 0,
+            minor: 0,
+            patch: 0,
+        }, &event_loop_took);
+        event_loop = Some(event_loop_took);
+        surface
+    };
+
+    let mut tick = 0;
+    // let mut times = vec![];
+    let mut last_time = std::time::SystemTime::now();
+    let mut closing = false;
+    println!("Starting event loop");
+    event_loop.unwrap().run( move |event, _, control_flow| {
+        let dur = std::time::SystemTime::now().duration_since(last_time).unwrap();
+        tick+=1;
+        if !closing {
+            surface.window().set_title(format!("oui oui {} {}", tick, dur.as_nanos()).as_str());
+        }
+        match event {
+            winit::event::Event::WindowEvent { event: winit::event::WindowEvent::CloseRequested|winit::event::WindowEvent::Destroyed, .. } => {
+                closing = true;
+                surface.window().set_title("oui oui (Closing)");
+                println!("Close requested");
+                *control_flow = ControlFlow::Exit;
+            },
+            _ => ()
+        }
+        
+        let render_tick_result = test_rendering.render().expect("Error in render body: ");
+        if render_tick_result != 0 {
+            println!("Renderer stopped with code: {}", render_tick_result);
+            *control_flow = ControlFlow::Exit;
+            return;
+        }
+        last_time = std::time::SystemTime::now();
+    });
 }

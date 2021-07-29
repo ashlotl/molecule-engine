@@ -458,6 +458,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee2626afccd7561a06cf1367e2950c4718ea04565e20fb5029b6c7d8ad09abcf"
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -713,12 +719,21 @@ name = "molecule-engine"
 version = "0.1.0"
 dependencies = [
  "crossbeam 0.5.0",
+ "dyn-clone",
+ "mopa",
+ "soa_derive",
  "take-for-scope",
  "vulkano",
  "vulkano-shaders",
  "vulkano-win",
  "winit",
 ]
+
+[[package]]
+name = "mopa"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a785740271256c230f57462d3b83e52f998433a7062fc18f96d5999474a9f915"
 
 [[package]]
 name = "ndk"
@@ -1178,6 +1193,26 @@ dependencies = [
  "wayland-client",
  "wayland-cursor",
  "wayland-protocols",
+]
+
+[[package]]
+name = "soa_derive"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9530263f0a29b2abb4043c75378812ee56a350fa2d4ef7e94d7ef9bf02c450f7"
+dependencies = [
+ "soa_derive_internal",
+]
+
+[[package]]
+name = "soa_derive_internal"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02dc9a44e01656154bb31f6c9d9ee2d2fbe1fc57d40b808a87537d0c5baea70f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
