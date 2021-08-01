@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     sync::{
         Arc,
+        Mutex,
     },
     thread,
 };
@@ -37,7 +38,6 @@ use vulkano::{
     },
     image::{
         ImageDimensions,
-        ImageUsage,
         StorageImage,
         view::ImageView,
     },
@@ -52,19 +52,21 @@ use vulkano::{
         ComputePipelineAbstract,
         GraphicsPipeline,
         GraphicsPipelineAbstract,
+        layout::PipelineLayout,
         vertex::SingleBufferDefinition,
+        viewport::Viewport,
     },
     render_pass::{
         FramebufferAbstract,
+        RenderPass,
         Subpass,
     },
     swapchain,
     swapchain::{
-        ColorSpace,
-        FullscreenExclusive,
-        PresentMode,
-        SurfaceTransform,
+        AcquireError,
+        Surface,
         Swapchain,
+        SwapchainCreationError,
     },
     sync,
     sync::{
@@ -73,7 +75,9 @@ use vulkano::{
     },
 };
 
-use vulkano_win::VkSurfaceBuild;
+use vulkano_win::{
+    VkSurfaceBuild,
+};
 
 use winit::{
     event_loop::{
@@ -81,7 +85,10 @@ use winit::{
         EventLoop,
     },
     window,
-    window::WindowBuilder,
+    window::{
+        Window,
+        WindowBuilder,
+    },
 };
 
 use molecule_engine::{
@@ -93,19 +100,27 @@ use molecule_engine::{
     utils::shaders::shaders_const,
 };
 
-pub struct VulkanState {
+pub struct VulkanState {//given that almost everything in here is an Option, consider just wrapping the whole thing in an option when you do it yourself and save some pain
+    recreate_swapchain: bool,
+
     instance:Option<Arc<Instance>>,
     cpu_buffers_u8_slice: Vec<Option<Arc<CpuAccessibleBuffer<[u8]>>>>,
     cpu_buffers_vertex_slice: Vec<Option<Arc<CpuAccessibleBuffer<[Vertex]>>>>,
     compute_pipelines:Vec<Option<Arc<ComputePipeline>>>,
+    dimensions: Option<[u32;2]>,
     dynamic_state: Option<DynamicState>,
     framebuffers: Option<Vec<Arc<dyn FramebufferAbstract + Send + Sync>>>,
     graphics_pipelines: Vec<Option<Arc<GraphicsPipeline<SingleBufferDefinition<Vertex>>>>>,
-    graphics_set: Option<std::sync::Arc<vulkano::descriptor::descriptor_set::PersistentDescriptorSet<((), vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf<vulkano::buffer::cpu_pool::CpuBufferPoolSubbuffer<shaders_const::edges_shader::ty::Data, std::sync::Arc<vulkano::memory::pool::StdMemoryPool>>>)>>>,
+    graphics_layout: Option<Arc<PipelineLayout>>,
     queue:Option<Arc<Queue>>,
+    render_pass: Option<Arc<RenderPass>>,
+    standard_vertex_shader: Option<shaders_const::standard_vertex_shader::Shader>,
+    mandelbrot_shader: Option<shaders_const::mandelbrot_shader::Shader>,
     storage_image_persistent_descriptor_sets: Vec<Option<Arc<PersistentDescriptorSet<((), PersistentDescriptorSetImg<Arc<ImageView<Arc<StorageImage>>>>)>>>>,
     storage_images:Vec<Option<Arc<StorageImage>>>,
+    surface: Option<Arc<Surface<Window>>>,
     swapchain: Option<Arc<Swapchain<window::Window>>>,
+    tick: u32,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
 }
 
@@ -114,7 +129,7 @@ unsafe impl Send for VulkanState {}
 pub struct VulkanTest {
     pub time:u32,
 
-    pub state_ignore: Option<VulkanState>, //as the name suggests, don't worry about this parameter if you're just using the api--Set it to None
+    pub state_ignore: Option<Arc<Mutex<VulkanState>>>, //as the name suggests, don't worry about this parameter if you're just using the api--Set it to None
     pub configs: Configs,
     pub shader_path: String,
 }
@@ -134,7 +149,8 @@ impl VulkanTest {
         
         let version = get_engine_version();
         
-        self.state_ignore = Some(VulkanState {
+        self.state_ignore = Some(Arc::new(Mutex::new(VulkanState {
+            recreate_swapchain: false,
             cpu_buffers_u8_slice: vec![],
             cpu_buffers_vertex_slice: vec![],
             instance: Some(match Instance::new(
@@ -163,21 +179,27 @@ impl VulkanTest {
             },
             ),
             compute_pipelines: vec![],
+            dimensions: None,
             dynamic_state: None,
             framebuffers: None,
+            graphics_layout: None,
             graphics_pipelines: vec![],
-            graphics_set: None,
             previous_frame_end: None,
             queue: None,
+            render_pass: None,
+            standard_vertex_shader: None,
+            mandelbrot_shader: None,
             storage_image_persistent_descriptor_sets: vec![],
             storage_images: vec![],
+            surface: None,
             swapchain: None,
-        });
-        let mut state_ignore = self.state_ignore.take().unwrap();
+            tick: 0,
+        })));
+        let mut state_ignore = self.state_ignore.as_mut().unwrap().lock().unwrap();
         
         // Let's replicate some stuff from the Vulkano rs tutorial to make sure everything's working and provide a simple compute shader template
 
-        let instance = state_ignore.instance.take().unwrap();
+        let instance = state_ignore.instance.as_ref().unwrap().clone();
 
         let surface = WindowBuilder::new().build_vk_surface(event_loop, instance.clone()).unwrap();
 
@@ -186,6 +208,7 @@ impl VulkanTest {
         let caps = surface.capabilities(physical).expect("Could not get surface capabilities");
 
         let dimensions = caps.current_extent.unwrap_or([1024, 1024]);
+        state_ignore.dimensions = Some(dimensions);
         let alpha = caps.supported_composite_alpha.iter().next().unwrap();
         let format = caps.supported_formats[0].0;
 
@@ -209,19 +232,11 @@ impl VulkanTest {
         let previous_frame_end = Some(sync::now(device.clone()).boxed());
         state_ignore.previous_frame_end = previous_frame_end;
 
-        let (swapchain, images) = Swapchain::start(device.clone(), surface.clone())
-            .num_images(caps.min_image_count)
-            .format(format)
-            .dimensions(dimensions)
-            .layers(1)
-            .usage(ImageUsage::color_attachment())
-            .transform(SurfaceTransform::Identity)
-            .composite_alpha(alpha)
-            .present_mode(PresentMode::Fifo)
-            .fullscreen_exclusive(FullscreenExclusive::Default)
-            .clipped(true)
-            .color_space(ColorSpace::SrgbNonLinear)
-            .build().unwrap();
+        let (swapchain, images) = match rendering::create_swapchain(Swapchain::start(device.clone(), surface.clone()), caps.clone(), format, dimensions, alpha) {
+            Ok(ret) => ret,
+            Err(SwapchainCreationError::UnsupportedDimensions) => panic!("Unsupported dimensions!"),
+            Err(e) => panic!("{}", e),
+        };
 
         state_ignore.swapchain = Some(swapchain.clone());
 
@@ -234,50 +249,7 @@ impl VulkanTest {
         let image_dest_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, (0..1024*1024*4).map(|_| 0u8)).expect("Could not create image destination CpuAccessibleBuffer");
         state_ignore.cpu_buffers_u8_slice.push(Some(image_dest_buffer.clone()));
 
-        let vertex_buffer = {
-            
-            vulkano::impl_vertex!(Vertex, position);
-    
-            CpuAccessibleBuffer::from_iter(
-                device.clone(),
-                BufferUsage::all(),
-                false,
-                [
-                    Vertex {
-                        position: [-1.0, -1.0, 1.0],
-                    },
-                    Vertex {
-                        position: [-1.0, 1.0, 1.0],
-                    },
-                    Vertex {
-                        position: [1.0, 1.0, 1.0],
-                    },
-                    Vertex {
-                        position: [1.0, 1.0, 1.0],
-                    },
-                    Vertex {
-                        position: [1.0, -1.0, 1.0],
-                    },
-                    Vertex {
-                        position: [-1.0, -1.0, 1.0],
-                    },
-                ]
-                .iter()
-                .cloned(),
-            )
-            .unwrap()
-        };
-        state_ignore.cpu_buffers_vertex_slice.push(Some(vertex_buffer));
-
-        let uniform_buffer = CpuBufferPool::<shaders_const::edges_shader::ty::Data>::new(device.clone(), BufferUsage::all());
-
-        let uniform_subbuffer = {
-            let uniform_data = shaders_const::edges_shader::ty::Data {
-                window_dimensions: [800, 600],
-            };
-
-            uniform_buffer.next(uniform_data).unwrap()
-        };
+        create_vertex_buffers(&mut state_ignore, device.clone());
 
         let test_compute_shader = shaders_const::test_compute_shader::Shader::load(device.clone()).expect("Failed to load compute Shader module.");
         let mandelbrot_compute_shader = shaders_const::mandelbrot_compute_shader::Shader::load(device.clone()).expect("Failed to load compute Shader module.");
@@ -329,9 +301,13 @@ impl VulkanTest {
                 .triangle_list()
                 // Use a resizable viewport set to draw over the entire window
                 .viewports_dynamic_scissors_irrelevant(1)
-                // See `vertex_shader`.
+                .viewports(std::iter::once(Viewport {
+                    origin: [0.0, 0.0],
+                    dimensions: [dimensions[0] as f32, dimensions[1] as f32],
+                    depth_range: 0.0..1.0,
+                }))
                 .fragment_shader(mandelbrot_shader.main_entry_point(), ())
-                // We have to indicate which subpass of which render pass this pipeline is going to be used
+                // We have to sindicate which subpass of which render pass this pipeline is going to be used
                 // in. The pipeline will only be usable from this particular subpass.
                 .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
                 // Now that our builder is filled, we call `build()` to obtain an actual pipeline.
@@ -339,14 +315,10 @@ impl VulkanTest {
                 .unwrap(),
         );
         let graphics_layout = graphics_pipeline.layout().clone();
-        let graphics_set = Arc::new(
-            PersistentDescriptorSet::start(graphics_layout.clone().descriptor_set_layout(0).unwrap().clone())
-                .add_buffer(uniform_subbuffer)
-                .unwrap()
-                .build()
-                .unwrap(),
-        );
-        state_ignore.graphics_set = Some(graphics_set);
+
+        state_ignore.standard_vertex_shader = Some(standard_shader);
+        state_ignore.mandelbrot_shader = Some(mandelbrot_shader);
+        state_ignore.graphics_layout = Some(graphics_layout);
         state_ignore.graphics_pipelines.push(Some(graphics_pipeline));
         
         let mut dynamic_state = DynamicState {
@@ -363,6 +335,8 @@ impl VulkanTest {
         state_ignore.framebuffers = Some(framebuffers);
 
         state_ignore.dynamic_state = Some(dynamic_state);
+
+        state_ignore.render_pass = Some(render_pass);
 
         let test_compute_pipeline = Arc::new(ComputePipeline::new(device.clone(), &test_compute_shader.main_entry_point(), &(), None).unwrap());
         state_ignore.compute_pipelines.push(Some(test_compute_pipeline.clone()));
@@ -429,93 +403,157 @@ impl VulkanTest {
         }
 
         state_ignore.instance = Some(instance);
-        self.state_ignore = Some(state_ignore);
+        state_ignore.surface = Some(surface.clone());
 
         surface
     }
 
     pub fn render(&mut self) -> Result<i32, &'static str> {//a lot of this handles window management, but we'll probably leave that in it's own system and run the vast majority of vulkan code in Tasks
-        let mut state_ignore = self.state_ignore.take().unwrap();
-        let instance = state_ignore.instance.take().unwrap();
+        let mut state_ignore = self.state_ignore.as_mut().unwrap().lock().unwrap();
+        {
 
-        let mandelbrot_compute_pipeline = state_ignore.compute_pipelines[1].as_mut().unwrap();
-        let graphics_pipeline = state_ignore.graphics_pipelines[0].as_mut().unwrap();
+            let mandelbrot_compute_pipeline = state_ignore.compute_pipelines[1].as_ref().unwrap().clone();
+            let graphics_pipeline = state_ignore.graphics_pipelines[0].as_ref().unwrap().clone();
+            let device = mandelbrot_compute_pipeline.device();//this should technically be in VulkanState, but eh
+            let dimensions = state_ignore.dimensions.as_ref().unwrap().clone();
+            let mut dynamic_state = state_ignore.dynamic_state.as_ref().unwrap().clone();
+            let framebuffers = state_ignore.framebuffers.as_ref().unwrap().clone();
+            let graphics_layout = state_ignore.graphics_layout.as_ref().unwrap().clone();
+            let queue = state_ignore.queue.as_ref().unwrap().clone();
+            let render_pass = state_ignore.render_pass.as_ref().unwrap().clone();
+            
+            let surface = state_ignore.surface.as_ref().unwrap().clone();
+            let vertex_buffer = state_ignore.cpu_buffers_vertex_slice[0].as_ref().unwrap().clone();
+            // println!("{:?}", vertex_buffer);
+            let swapchain = state_ignore.swapchain.as_ref().unwrap().clone();
 
-        let device = mandelbrot_compute_pipeline.device();
-        let queue = state_ignore.queue.take().unwrap();
+            state_ignore.previous_frame_end.as_mut().unwrap().cleanup_finished();//TODO: tf does this do
 
-        let framebuffers = state_ignore.framebuffers.take().unwrap();
-        let dynamic_state = state_ignore.dynamic_state.take().unwrap();
+            if state_ignore.recreate_swapchain {
+                println!("Recreating swapchain");
+                let dimensions: [u32; 2] = surface.window().inner_size().into();
+                let new_swapchain = swapchain.recreate().dimensions(dimensions).build();
+                
+                let new_swapchain_tuple = match new_swapchain {
+                    Ok(r) => r,
+                    Err(SwapchainCreationError::UnsupportedDimensions) => {
+                        println!("Swapchain has unsupported dimensions.");
+                        return Ok(0)},
+                    Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
+                };
 
-        let image = state_ignore.storage_images[0].take().unwrap();
-        let image_dest_buffer = state_ignore.cpu_buffers_u8_slice[0].take().unwrap();
-        let mandelbrot_set = state_ignore.storage_image_persistent_descriptor_sets[0].take().unwrap();
+                state_ignore.swapchain = Some(new_swapchain_tuple.0);
+                let new_framebuffers = rendering::window_size_dependent_setup(
+                    &new_swapchain_tuple.1,
+                    render_pass.clone(),
+                    &mut dynamic_state,
+                );
+                let standard_vertex_shader = state_ignore.standard_vertex_shader.as_ref().unwrap().clone();
+                let mandelbrot_shader = state_ignore.mandelbrot_shader.as_ref().unwrap().clone();
+                let dimensions: [u32; 2] = new_swapchain_tuple.1[0].dimensions();
+                let new_pipeline = Arc::new(
+                    GraphicsPipeline::start()
+                        .vertex_input_single_buffer()
+                        .vertex_shader(standard_vertex_shader.main_entry_point(), ())
+                        .triangle_list()
+                        .viewports_dynamic_scissors_irrelevant(1)
+                        .viewports(std::iter::once(Viewport {
+                            origin: [0.0, 0.0],
+                            dimensions: [dimensions[0] as f32, dimensions[1] as f32],
+                            depth_range: 0.0..1.0,
+                        }))
+                        .fragment_shader(mandelbrot_shader.main_entry_point(), ())
+                        .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+                        .build(device.clone())
+                        .unwrap(),
+                );
+                
+                
+                state_ignore.cpu_buffers_vertex_slice = vec![];
+                state_ignore.dimensions = Some(dimensions);
+                state_ignore.framebuffers = Some(new_framebuffers);
+                state_ignore.graphics_pipelines[0] = Some(new_pipeline);
+                state_ignore.recreate_swapchain = false;
+                create_vertex_buffers(&mut state_ignore, device.clone());
+                return Ok(0);
+            }
 
-        let graphics_set = state_ignore.graphics_set.take().unwrap();
+            let uniform_buffer = CpuBufferPool::<shaders_const::mandelbrot_shader::ty::Data>::new(device.clone(), BufferUsage::all());
+            let uniform_subbuffer = {
+                let uniform_data = shaders_const::mandelbrot_shader::ty::Data {
+                    window_dimensions: [dimensions[0] as i32, dimensions[1] as i32],
+                    time: state_ignore.tick,
+                };
+    
+                uniform_buffer.next(uniform_data).unwrap()
+            };
+            let graphics_set = Arc::new(
+                PersistentDescriptorSet::start(graphics_layout.clone().descriptor_set_layout(0).unwrap().clone())
+                    .add_buffer(uniform_subbuffer)
+                    .unwrap()
+                    .build()
+                    .unwrap(),
+            );
 
-        let vertex_buffer = state_ignore.cpu_buffers_vertex_slice[0].take().unwrap();
+            let swapchain_next_res = swapchain::acquire_next_image(swapchain.clone(), None);
 
-        let swapchain = state_ignore.swapchain.take().unwrap();
+            let (image_num, _, acquire_future) = match swapchain_next_res {
+                Ok(r) => {
+                    if r.1 {//suboptimal
+                        println!("Swapchain suboptimal, recreating.");
+                        state_ignore.recreate_swapchain = true;
+                    }
+                    r
+                },
+                Err(AcquireError::OutOfDate) => {
+                    println!("Swapchain out of date, recreating.");
+                    state_ignore.recreate_swapchain = true;
+                    return Ok(0);
+                },
+                Err(e) => panic!("Could not acquire next image: {:?}", e)
+            };
 
-        let swapchain_next = swapchain::acquire_next_image(swapchain.clone(), None).unwrap();
+            let clear_values = vec![[1.0, 0.0, 1.0, 1.0].into()];
 
-        let clear_values = vec![[1.0, 0.0, 1.0, 1.0].into()];
+            let mut command_buffer_builder_1 = AutoCommandBufferBuilder::primary(device.clone(), queue.family(), CommandBufferUsage::MultipleSubmit).unwrap();
+            command_buffer_builder_1
+                .begin_render_pass(framebuffers[image_num].clone(), SubpassContents::Inline, clear_values).unwrap()
+                .draw(graphics_pipeline.clone(), &DynamicState::none(), vertex_buffer.clone(), graphics_set.clone(), (800, 600), 0..0).unwrap()
+                .end_render_pass().unwrap();
 
-        let mut command_buffer_builder_1 = AutoCommandBufferBuilder::primary(device.clone(), queue.family(), CommandBufferUsage::MultipleSubmit).unwrap();
-        command_buffer_builder_1
-            .begin_render_pass(framebuffers[swapchain_next.0].clone(), SubpassContents::Inline, clear_values).unwrap()
-            .draw(graphics_pipeline.clone(), &dynamic_state, vertex_buffer.clone(), graphics_set.clone(), (800, 600), 0..0).unwrap()
-            .end_render_pass().unwrap();
+            let command_buffer_1 = command_buffer_builder_1.build().unwrap();
+            
 
-        let command_buffer_1 = command_buffer_builder_1.build().unwrap();
-        
+            let future = state_ignore.previous_frame_end.take().unwrap()
+                .join(acquire_future)
+                .then_execute(queue.clone(), command_buffer_1).unwrap()
+                .then_swapchain_present(queue.clone(), swapchain.clone(), image_num)
+                .then_signal_fence_and_flush();      
+            
 
-        let future = state_ignore.previous_frame_end.take().unwrap()
-            .join(swapchain_next.2)
-            .join(sync::now(device.clone()))
-            .then_execute(queue.clone(), command_buffer_1).unwrap()
-            .then_swapchain_present(queue.clone(), swapchain.clone(), swapchain_next.0)
-            .then_signal_fence_and_flush();      
-        
-
-        match future {
-            Ok(future) => {
-                static mut EVERY_10:u32 = 0;
-                let go = unsafe {EVERY_10==9};
-                unsafe {EVERY_10+=1};
-                if go {
-                    let future = future.join(sync::now(device.clone()));
-                    // state_ignore.wait_channels.Vulkan_Test_Secondary_Thread_Done.1.lock().unwrap().recv().unwrap();
-                    //do something with buffer
-                    // state_ignore.wait_channels.Vulkan_Test_Main_Thread_Received_Done.0.lock().unwrap().send(()).unwrap();
-                    state_ignore.previous_frame_end = Some(future.boxed());
-                } else {
-                    state_ignore.previous_frame_end = Some(future.boxed());
+            match future {
+                Ok(future) => {
+                    static mut EVERY_10:u32 = 0;
+                    let go = unsafe {EVERY_10==9};
+                    unsafe {EVERY_10+=1};
+                    if go {
+                        let future = future.join(sync::now(device.clone()));
+                        state_ignore.previous_frame_end = Some(future.boxed());
+                    } else {
+                        state_ignore.previous_frame_end = Some(future.boxed());
+                    }
+                }
+                Err(FlushError::OutOfDate) => {
+                    // recreate_swapchain = true;
+                    state_ignore.previous_frame_end = Some(sync::now(device.clone()).boxed());
+                }
+                Err(e) => {
+                    panic!("Failed to flush future: {:?}", e);
+                    // state_ignore.previous_frame_end = Some(sync::now(device.clone()).boxed());
                 }
             }
-            Err(FlushError::OutOfDate) => {
-                // recreate_swapchain = true;
-                state_ignore.previous_frame_end = Some(sync::now(device.clone()).boxed());
-            }
-            Err(e) => {
-                panic!("Failed to flush future: {:?}", e);
-                // state_ignore.previous_frame_end = Some(sync::now(device.clone()).boxed());
-            }
         }
-
-
-        
-        state_ignore.dynamic_state = Some(dynamic_state);
-        state_ignore.instance = Some(instance);
-        state_ignore.queue = Some(queue);
-        state_ignore.storage_images[0] = Some(image);
-        state_ignore.cpu_buffers_u8_slice[0] = Some(image_dest_buffer);
-        state_ignore.cpu_buffers_vertex_slice[0] = Some(vertex_buffer);
-        state_ignore.framebuffers = Some(framebuffers);
-        state_ignore.graphics_set = Some(graphics_set);
-        state_ignore.storage_image_persistent_descriptor_sets[0] = Some(mandelbrot_set);
-        state_ignore.swapchain = Some(swapchain);
-        self.state_ignore = Some(state_ignore);
+        state_ignore.tick+=1;
         self.time+=1;
         Result::Ok(0)
     }
@@ -550,30 +588,68 @@ pub fn make_vulkan_test() {
     let mut tick = 0;
     // let mut times = vec![];
     let mut last_time = std::time::SystemTime::now();
-    let mut closing = false;
     println!("Starting event loop");
     event_loop.unwrap().run( move |event, _, control_flow| {
-        let dur = std::time::SystemTime::now().duration_since(last_time).unwrap();
         tick+=1;
-        if !closing {
-            surface.window().set_title(format!("oui oui {} {}", tick, dur.as_nanos()).as_str());
-        }
         match event {
-            winit::event::Event::WindowEvent { event: winit::event::WindowEvent::CloseRequested|winit::event::WindowEvent::Destroyed, .. } => {
-                closing = true;
+            winit::event::Event::WindowEvent { event: winit::event::WindowEvent::CloseRequested, .. } => {
                 surface.window().set_title("oui oui (Closing)");
                 println!("Close requested");
+                //TODO: forward to a Controlling to handle saves, etc
                 *control_flow = ControlFlow::Exit;
             },
-            _ => ()
-        }
-        
-        let render_tick_result = test_rendering.render().expect("Error in render body: ");
-        if render_tick_result != 0 {
-            println!("Renderer stopped with code: {}", render_tick_result);
-            *control_flow = ControlFlow::Exit;
-            return;
-        }
-        last_time = std::time::SystemTime::now();
+            winit::event::Event::WindowEvent { event: winit::event::WindowEvent::Resized(_), ..} =>  {
+                test_rendering.state_ignore.as_mut().unwrap().lock().unwrap().recreate_swapchain = true;
+            },
+            winit::event::Event::RedrawEventsCleared => {
+                let dur = std::time::SystemTime::now().duration_since(last_time).unwrap();
+                surface.window().set_title(format!("oui oui {} {}", tick, dur.as_nanos()).as_str());
+                let render_tick_result = test_rendering.render().expect("Error in render body: ");
+                if render_tick_result != 0 {
+                    println!("Renderer stopped with code: {}", render_tick_result);
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                last_time = std::time::SystemTime::now();
+            }
+            _ => {}
+        } 
     });
+}
+
+fn create_vertex_buffers(state_ignore:&mut VulkanState, device: Arc<Device>) {
+    let vertex_buffer = {
+            
+        vulkano::impl_vertex!(Vertex, position);
+
+        CpuAccessibleBuffer::from_iter(
+            device.clone(),
+            BufferUsage::all(),
+            false,
+            [
+                Vertex {//top left
+                    position: [-1.0, -1.0, 1.0],
+                },
+                Vertex {//bottom left
+                    position: [-1.0, 1.0, 1.0],
+                },
+                Vertex {//bottom right
+                    position: [1.0, 1.0, 1.0],
+                },
+                Vertex {//bottom right
+                    position: [1.0, 1.0, 1.0],
+                },
+                Vertex {//top right
+                    position: [1.0, -1.0, 1.0],
+                },
+                Vertex {//top left
+                    position: [-1.0, -1.0, 1.0],
+                },
+            ]
+            .iter()
+            .cloned(),
+        )
+        .unwrap()
+    };
+    state_ignore.cpu_buffers_vertex_slice.push(Some(vertex_buffer));
 }

@@ -722,7 +722,6 @@ dependencies = [
  "dyn-clone",
  "mopa",
  "soa_derive",
- "take-for-scope",
  "vulkano",
  "vulkano-shaders",
  "vulkano-win",
@@ -1237,10 +1236,6 @@ dependencies = [
  "quote",
  "unicode-xid",
 ]
-
-[[package]]
-name = "take-for-scope"
-version = "0.1.0"
 
 [[package]]
 name = "thiserror"

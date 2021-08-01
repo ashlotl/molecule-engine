@@ -19,7 +19,7 @@ vulkano-win = "0.24"
 winit = "0.25"
 
 #local dependencies, which I should probably upload to crates.io if I ever want someone else to be able to use this code.
-take-for-scope = {path = "../take-for-scope"}
+# (none, I simplified things)
 
 
 [[test]]

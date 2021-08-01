@@ -6,21 +6,53 @@ use std::{
 
 use vulkano::{
     command_buffer::DynamicState,
+    format::Format,
     image::{
-        SwapchainImage,
+        ImageUsage,
+        swapchain::SwapchainImage,
         view::ImageView,
     },
-    pipeline::viewport::Viewport,
+    pipeline::{
+        viewport::Viewport,
+    },
     render_pass::{
         Framebuffer,
         FramebufferAbstract,
         RenderPass,
     },
+    swapchain::{
+        Capabilities,
+        ColorSpace,
+        CompositeAlpha,
+        FullscreenExclusive,
+        PresentMode,
+        SurfaceTransform,
+        Swapchain,
+        SwapchainBuilder,
+        SwapchainCreationError,
+    },
 };
 
 use winit::{
     window,
+    window::Window,
 };
+
+pub fn create_swapchain(builder: SwapchainBuilder<Window>, caps: Capabilities, format: Format, dimensions: [u32;2], alpha: CompositeAlpha) -> Result<(Arc<Swapchain<Window>>, Vec<Arc<SwapchainImage<Window>>>), SwapchainCreationError> {
+    builder
+        .num_images(caps.min_image_count)
+        .format(format)
+        .dimensions(dimensions)
+        .layers(1)
+        .usage(ImageUsage::color_attachment())
+        .transform(SurfaceTransform::Identity)
+        .composite_alpha(alpha)
+        .present_mode(PresentMode::Fifo)
+        .fullscreen_exclusive(FullscreenExclusive::Default)
+        .clipped(true)
+        .color_space(ColorSpace::SrgbNonLinear)
+        .build()
+}
 
 pub fn window_size_dependent_setup(
     images: &[Arc<SwapchainImage<window::Window>>],
